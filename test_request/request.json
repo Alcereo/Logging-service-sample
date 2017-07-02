@@ -1,0 +1,8 @@
+{
+  "event":"success",
+  "deserialize":"alarm",
+  "default":"ok",
+  "alarm":"com-pers",
+  "persist":"ok",
+  "command":"ok"
+}
