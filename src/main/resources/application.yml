@@ -1,0 +1,28 @@
+logging:
+  level:
+    ru.alcereo: debug
+
+---
+
+spring:
+  profiles: local
+  output:
+    ansi:
+      enabled: always
+
+server:
+  port: 8000
+logging:
+  pattern:
+    console: '%d{"HH:mm:ss.SSS"} %clr([%8level]){cyan} %clr([%15mdc{stage}]){highlight} %msg %ex{full} %clr([%mdc]){blue}%n'
+  file: logback1.xml
+
+---
+
+spring:
+  profiles: prod
+  main:
+    banner-mode: 'OFF'
+logging:
+  config: classpath:logback-prod-json.xml
+
