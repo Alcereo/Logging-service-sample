@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit;
  * Created by alcereo on 20.07.17.
  */
 @Configuration
-@EnableMetrics
+@EnableMetrics(proxyTargetClass = true, exposeProxy = true)
 public class MetricsConfiguration extends MetricsConfigurerAdapter{
 
     @Override
@@ -20,6 +20,6 @@ public class MetricsConfiguration extends MetricsConfigurerAdapter{
 
         StatsDReporter.forRegistry(metricRegistry)
                 .build("localhost", 8125)
-                .start(2, TimeUnit.SECONDS);
+                .start(1, TimeUnit.SECONDS);
     }
 }

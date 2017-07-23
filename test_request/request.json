@@ -2,7 +2,7 @@
   "event":"success",
   "deserialize":"alarm",
   "default":"ok",
-  "alarm":"com-pers",
+  "alarm":"command",
   "persist":"ok",
   "command":"ok"
 }

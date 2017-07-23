@@ -15,7 +15,6 @@ server:
 logging:
   pattern:
     console: '%d{"HH:mm:ss.SSS"} %clr([%8level]){cyan} %clr([%15mdc{stage}]){highlight} %msg %ex{full} %clr([%mdc]){blue}%n'
-  file: logback1.xml
 
 ---
 

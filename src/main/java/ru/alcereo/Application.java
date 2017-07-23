@@ -1,5 +1,7 @@
 package ru.alcereo;
 
+import com.codahale.metrics.Counter;
+import com.codahale.metrics.Gauge;
 import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.Timer;
 import org.jboss.logging.MDC;
@@ -15,6 +17,10 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.function.Supplier;
 
 import static com.codahale.metrics.MetricRegistry.name;
 
@@ -26,46 +32,26 @@ import static com.codahale.metrics.MetricRegistry.name;
 public class Application {
     private static final Logger logger = LoggerFactory.getLogger(Application.class);
 
+    private MetricRegistry registry;
+
+//    private ExecutorService threadPool = Executors.newCachedThreadPool();
+    private ExecutorService threadPool = Executors.newFixedThreadPool(5000);
+
     @Autowired
-    private MetricRegistry metricRegistry;
+    public Application(MetricRegistry metricRegistry) {
+        this.registry = metricRegistry;
 
-//    @Bean
-//    public Timer timer(){
-//        return metricRegistry.timer(name(Application.class, "business-requests"));
-//    }
-//
-//    @Autowired
-//    private Timer timer;
+        registry.register(
+                name(Application.class, "tread-pool-job-count"),
+                (Gauge<Integer>) () -> ((ThreadPoolExecutor)threadPool).getQueue().size()
+        );
+    }
 
-//    @Bean(destroyMethod = "stop")
-//    StatsDReporter graphiteReporter() {
-//        // add some JVM metrics (wrap in MetricSet to add better key prefixes)
-////        MetricSet jvmMetrics = new MetricSet() {
-////
-////            @Override
-////            public Map<String, com.codahale.metrics.Metric> getMetrics() {
-////
-////                Map<String, com.codahale.metrics.Metric> metrics = new HashMap<String, Metric>();
-////                metrics.put("gc", new GarbageCollectorMetricSet());
-////                metrics.put("file-descriptors", new FileDescriptorRatioGauge());
-////                metrics.put("memory-usage", new MemoryUsageGaugeSet());
-////                metrics.put("threads", new ThreadStatesGaugeSet());
-////                return metrics;
-////            }
-////        };
-////        metricRegistry.registerAll(jvmMetrics);
-//
-//        // create and start reporter
-//        StatsDReporter reporter = StatsDReporter.forRegistry(metricRegistry)
-//                .build("localhost", 8125);
-//
-//        reporter.start(2, TimeUnit.SECONDS);
-//
-//        return reporter;
-//    }
+//    private ExecutorService threadPool = Executors.newCachedThreadPool();
+
 
     @GetMapping("/")
-    public String testGet(){
+    public String testGet() {
         Integer id = new Random().nextInt(100);
         String msg = "Some logs id: " + id;
         logger.debug(msg);
@@ -74,7 +60,7 @@ public class Application {
     }
 
     @GetMapping("/exc")
-    public String getException(){
+    public String getException() {
         Integer id = new Random().nextInt(100);
         String msg = "Some logs id: " + id;
         logger.debug(msg);
@@ -86,52 +72,77 @@ public class Application {
     }
 
     @PostMapping("/business")
-    public String getEvent(@RequestBody Map<String, String> event){
+    public String getEvent(@RequestBody Map<String, String> event) {
+
+        registry.meter("business").mark();
+        registry.counter("business-counter").inc();
+
+        Counter counter = registry.counter("business-worker-counter");
+
+        threadPool.submit(
+                () -> timedFunction(
+                        "business",
+                        () -> {
+
+                            counter.inc();
+
+                            try {
+
+                                MDC.put("event", event);
+                                MDC.put("stage", "get_event");
+                                logger.debug("get event");
+
+                                switch (event.get("event")) {
+                                    case "success":
+                                        logger.debug("success read event");
+                                        deserialize(event);
+                                        break;
+
+                                    default:
+                                        logger.error("get event error");
+                                        throw new RuntimeException("get event error. with code: " + event.get("event"));
+                                }
+
+                                MDC.clear();
+
+                                return "finish";
+
+                            }finally {
+                                counter.dec();
+                            }
+                        }
+                )
+        );
+
+        return "ok";
+    }
+
+    public <RESULT> RESULT timedFunction(String function_name, Supplier<RESULT> function){
 
         final Timer.Context context =
-                metricRegistry.timer(
+                registry.timer(
                         name(Application.class,
-                                "business")
+                                function_name)
                 ).time();
 
         try {
-
-            MDC.put("event", event);
-            MDC.put("stage", "get_event");
-            logger.debug("get event");
-
-            switch (event.get("event")) {
-                case "success":
-                    logger.debug("success read event");
-                    deserialize(event);
-                    break;
-
-                default:
-                    logger.error("get event error");
-                    throw new RuntimeException("get event error. with code: " + event.get("event"));
-            }
-
-        }finally {
+            return function.get();
+        } finally {
             context.stop();
         }
 
-        return "ok";
     }
 
     public void deserialize(@RequestBody Map<String, String> event) {
 
         final Timer.Context context =
-                metricRegistry.timer(
+                registry.timer(
                         name(Application.class,
                                 "deserialize")
                 ).time();
 
         try {
-            try {
-                Thread.sleep(new Random().nextInt(1000));
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
+            sleep(1000);
 
             MDC.put("stage", "deserialize");
 
@@ -157,103 +168,77 @@ public class Application {
 
     }
 
-//    @Timed
+    private static void sleep(int bound) {
+        try {
+            Thread.sleep(new Random().nextInt(bound));
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     public void alarm(@RequestBody Map<String, String> event) {
 
-        final Timer.Context context =
-                metricRegistry.timer(
-                        name(Application.class,
-                                "alarm")
-                ).time();
+        timedFunction(
+                "alarm",
+                () -> {
+                    sleep(800);
 
-        try {
+                    MDC.put("stage", "alarm_event");
+                    switch (event.get("alarm")) {
+                        case "persist":
+                            logger.debug("try to persist alarm");
+                            persist(event);
+                            break;
 
-            try {
-                Thread.sleep(new Random().nextInt(800));
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
+                        case "command":
+                            logger.debug("try to run command for alarm");
+                            command(event);
+                            break;
 
-            MDC.put("stage", "alarm_event");
-            switch (event.get("alarm")) {
-                case "persist":
-                    logger.debug("try to persist alarm");
-                    persist(event);
-                    break;
+                        case "com-pers":
+                            logger.debug("try to run command and persist for alarm");
+                            persist(event);
+                            command(event);
+                            break;
 
-                case "command":
-                    logger.debug("try to run command for alarm");
-                    command(event);
-                    break;
+                        default:
+                            logger.error("cant find strategy for alarm");
+                            throw new RuntimeException("cant find strategy for alarm. with code: " + event.get("alarm"));
 
-                case "com-pers":
-                    logger.debug("try to run command and persist for alarm");
-                    persist(event);
-                    command(event);
-                    break;
-
-                default:
-                    logger.error("cant find strategy for alarm");
-                    throw new RuntimeException("cant find strategy for alarm. with code: " + event.get("alarm"));
-
-            }
-
-        }finally {
-            context.stop();
-        }
+                    }
+                    return null;
+                });
     }
 
-//    @Timed
+    //    @Timed
     public void defaultEvent(@RequestBody Map<String, String> event) {
 
-        final Timer.Context context =
-                metricRegistry.timer(
-                        name(Application.class,
-                                "defaultEvent")
-                ).time();
+        timedFunction("defaultEvent",
+                () -> {
+                    sleep(500);
 
+                    MDC.put("stage", "default_event");
+                    logger.debug("is default event");
 
-        try {
+                    switch (event.get("default")) {
+                        case "ok":
+                            logger.debug("success handle default event");
+                            break;
 
-            try {
-                Thread.sleep(new Random().nextInt(500));
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-
-            MDC.put("stage", "default_event");
-            logger.debug("is default event");
-
-            switch (event.get("default")) {
-                case "ok":
-                    logger.debug("success handle default event");
-                    break;
-
-                default:
-                    logger.error("cant find strategy for default");
-                    throw new RuntimeException("cant find strategy for default. with code: " + event.get("default"));
-            }
-        }finally {
-            context.stop();
-        }
+                        default:
+                            logger.error("cant find strategy for default");
+                            throw new RuntimeException("cant find strategy for default. with code: " + event.get("default"));
+                    }
+                    return null;
+                }
+        );
     }
 
-//    @Timed
     public void command(@RequestBody Map<String, String> event) {
 
-        final Timer.Context context =
-                metricRegistry.timer(
-                        name(Application.class,
-                                "command")
-                ).time();
+        timedFunction("command",() -> {
 
-        try {
-
-            try {
-                Thread.sleep(new Random().nextInt(600));
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
+            sleep(600);
 
             MDC.put("stage", "run_command");
             logger.debug("try to run command for alarm");
@@ -267,43 +252,34 @@ public class Application {
                     logger.error("command running fail");
                     throw new RuntimeException("command running fail. with code: " + event.get("command"));
             }
-        }finally {
-            context.stop();
-        }
+
+            return null;
+        });
     }
 
-//    @Timed
+    //    @Timed
     public void persist(Map<String, String> event) {
 
-        final Timer.Context context =
-                metricRegistry.timer(
-                        name(Application.class,
-                                "persist")
-                ).time();
+        timedFunction("persist",
+                () -> {
+                    sleep(850);
 
-        try {
+                    MDC.put("stage", "persist");
+                    logger.debug("try to persist alarm");
 
-            try {
-                Thread.sleep(new Random().nextInt(850));
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
+                    switch (event.get("persist")) {
+                        case "ok":
+                            logger.debug("success persist alarm");
+                            break;
 
-            MDC.put("stage", "persist");
-            logger.debug("try to persist alarm");
+                        default:
+                            logger.error("alarm persist fail");
+                            throw new RuntimeException("alarm persist fail. with code: " + event.get("persist"));
+                    }
 
-            switch (event.get("persist")) {
-                case "ok":
-                    logger.debug("success persist alarm");
-                    break;
-
-                default:
-                    logger.error("alarm persist fail");
-                    throw new RuntimeException("alarm persist fail. with code: " + event.get("persist"));
-            }
-        }finally {
-            context.stop();
-        }
+                    return null;
+                }
+        );
     }
 
     public static void main(String[] args) {
